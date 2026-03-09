@@ -1,95 +1,158 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const readline = require('readline');
 
-// TODO: Load the credentials from the 'credentials.json' file
-// HINT: Use the 'fs' module to read and parse the file
-const credentials = TODO;
+//sleep function
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// CLI prompt helper
+function ask(question) {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
+
+    return new Promise(resolve => {
+        rl.question(question, answer => {
+            rl.close();
+            resolve(answer.trim());
+        });
+    });
+}
+
+const credentials = JSON.parse(fs.readFileSync('credentials.json'));
 
 (async () => {
-    // TODO: Launch a browser instance and open a new page
-    const browser = TODO;
-    const page = TODO;
 
-    // Navigate to GitHub login page
-    await page.goto('https://github.com/login');
+    const browser = await puppeteer.launch({
+        headless: true,
+        executablePath: '/usr/bin/chromium',
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        defaultViewport: null
+    });
 
-    // TODO: Login to GitHub using the provided credentials
-    // HINT: Use the 'type' method to input username and password, then click on the submit button
-    await TODO;
-    await TODO;
-    await TODO;
+    const page = await browser.newPage();
 
-    // Wait for successful login
-    await page.waitForSelector('.avatar.circle');
+    console.log("Opening GitHub login...");
 
-    // Extract the actual GitHub username to be used later
-    const actualUsername = await page.$eval('meta[name="octolytics-actor-login"]', meta => meta.content);
+    await page.goto('https://github.com/login', { waitUntil: 'networkidle2' });
 
-    const repositories = ["cheeriojs/cheerio", "axios/axios", "puppeteer/puppeteer"];
+    await page.type('#login_field', credentials.username);
+    await page.type('#password', credentials.password);
 
-    for (const repo of repositories) {
-        await page.goto(`https://github.com/${repo}`);
+    await Promise.all([
+        page.click('input[type="submit"]'),
+        page.waitForNavigation({ waitUntil: 'networkidle2' })
+    ]);
 
-        // TODO: Star the repository
-        // HINT: Use selectors to identify and click on the star button
-        await TODO;
-        await TODO; // This timeout helps ensure that the action is fully processed
+    let currentUrl = page.url();
+    console.log("Current URL:", currentUrl);
+
+    // Check if GitHub requires 2FA
+    const otpInput = await page.$('input[name="otp"]');
+
+    if (otpInput) {
+
+        console.log("GitHub 2FA verification required.");
+
+        const code = await ask("Paste GitHub email verification code: ");
+
+        await page.type('input[name="otp"]', code);
+
+        await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2' }),
+            page.click('button[type="submit"]')
+        ]);
+
+        console.log("2FA verification successful.");
     }
 
-    // TODO: Navigate to the user's starred repositories page
-    await page.goto(TODO);
+    console.log("Logged into GitHub as:", credentials.username);
 
-    // TODO: Click on the "Create list" button
-    await TODO;
-    await TODO;
+    const repositories = [
+        "cheeriojs/cheerio",
+        "axios/axios",
+        "puppeteer/puppeteer"
+    ];
 
-    // TODO: Create a list named "Node Libraries"
-    // HINT: Wait for the input field and type the list name
-    await TODO;
-    await TODO;
+    // STAR REPOS
+    for (const repo of repositories) {
 
-    // Wait for buttons to become visible
-    await page.waitForTimeout(1000);
+        console.log("Opening repo:", repo);
 
-    // Identify and click the "Create" button
-    const buttons = await page.$$('.Button--primary.Button--medium.Button');
-    for (const button of buttons) {
-        const buttonText = await button.evaluate(node => node.textContent.trim());
-        if (buttonText === 'Create') {
-            await button.click();
-            break;
+        await page.goto(`https://github.com/${repo}`, { waitUntil: 'networkidle2' });
+
+        await sleep(2000);
+
+        try {
+
+            const starSelector = 'button[aria-label^="Star this repository"]';
+
+            await page.waitForSelector(starSelector, { timeout: 5000 });
+
+            await page.click(starSelector);
+
+            console.log("Starred", repo);
+
+        } catch (err) {
+
+            console.log("Could not star", repo, "(maybe already starred)");
+
         }
+
+        await sleep(2000);
     }
 
-    // Allow some time for the list creation process
-    await page.waitForTimeout(2000);
+    // Go to stars page
+    const starsUrl = `https://github.com/willruskin?tab=stars`;
+    console.log("Opening starred repositories page...");
+    await page.goto(starsUrl, { waitUntil: "networkidle2" });
+    console.log("Current URL: ", page.url());
 
-    for (const repo of repositories) {
-        await page.goto(`https://github.com/${repo}`);
+    // Click "Create list"
+    const listName = `My Starred Repos`;
 
-        // TODO: Add this repository to the "Node Libraries" list
-        // HINT: Open the dropdown, wait for it to load, and find the list by its name
-        await TODO;
-        await TODO;
-        await TODO;
-        const lists = await page.$$('.js-user-list-menu-form');
+    // Wait for the button that opens the dialog
+    await page.waitForSelector('button[data-show-dialog-id]', { visible: true });
 
-        for (const list of lists) {
-          const textHandle = await list.getProperty('innerText');
-          const text = await textHandle.jsonValue();
-          if (text.includes('Node Libraries')) {
-            await list.click();
-            break;
-          }
-        }
+    // Click the Create list button
+    await page.click('button[data-show-dialog-id]');
 
-        // Allow some time for the action to process
-        await page.waitForTimeout(1000);
+    // small delay to let modal open
+    await sleep(1000);
 
-        // Close the dropdown to finalize the addition to the list
-        await page.click(dropdownSelector);
-      }
+    // Wait for the input field to appear and be interactable
+    /* 
+    
+    
+    THIS IS WHERE IT FAILS AT
 
-    // Close the browser
+
+    */
+
+
+    await page.waitForSelector('#user_list_name', { visible: true });
+
+    // Fill in the list name
+    await page.type('#user_list_name', listName);
+
+    // Wait a tiny bit before clicking "Create"
+    await sleep(500);
+
+    // Click the "Create" button inside the modal
+    const createSubmitBtn = await page.$('.js-user-list-form button[type="submit"]');
+    await createSubmitBtn.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    await createSubmitBtn.click();
+
+    // Wait for a confirmation element (the modal disappears or a new list appears)
+    await page.waitForSelector('.js-user-list-form', { hidden: true, timeout: 5000 });
+
+    console.log("List created:", listName);
+
+    // End of automation
+    console.log("Automation finished");
     await browser.close();
+
 })();
